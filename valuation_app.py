@@ -1,3 +1,9 @@
+st.set_page_config(
+    page_title="收租婆量化大师 V9.7", 
+    layout="wide", 
+    page_icon="📈"  # 手机桌面上会显示这个小图标
+)
+
 import streamlit as st
 import yfinance as yf
 
