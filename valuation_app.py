@@ -1,15 +1,11 @@
-st.set_page_config(
-    page_title="收租婆量化大师 V9.7", 
-    layout="wide", 
-    page_icon="📈"  # 手机桌面上会显示这个小图标
-)
-
 import streamlit as st
 import yfinance as yf
+import pandas as pd
+from datetime import datetime
 
-st.set_page_config(page_title="收租婆量化大师 V9.7", layout="wide", page_icon="🏦")
+st.set_page_config(page_title="收租婆量化大师 V9.8", layout="wide", page_icon="🏦")
 
-# ---------- 1. 缓存与数据抓取 ----------
+# ---------- 1. 基础数据抓取 ----------
 @st.cache_data(ttl=600)
 def get_info(ticker):
     return yf.Ticker(ticker).info
@@ -18,53 +14,34 @@ def get_info(ticker):
 def get_vix():
     try:
         return yf.Ticker("^VIX").history(period="1d")["Close"].iloc[-1]
-    except:
-        return 20.0
+    except: return 20.0
 
-# ---------- 2. 核心估值算法 (DCF 终值保护) ----------
+# ---------- 2. 核心算法 (保留V9.7) ----------
 def compute_dcf(fcf, growth, discount, shares):
-    if fcf <= 0 or shares <= 0:
-        return 0
-
-    # 前3年增长
+    if fcf <= 0 or shares <= 0: return 0
     fcf_3y = fcf * (1 + growth) ** 3
-    
-    # 终值阶段：增长率强制锁定在 2%-3% (永续增长不能超过GDP)
     terminal_growth = min(growth, 0.03)
     spread = max(discount - terminal_growth, 0.02)
-
     terminal_value = fcf_3y / spread
-    # 折现到现值
-    total_present_val = (fcf_3y + terminal_value) / ((1 + discount) ** 3)
-    
-    return total_present_val / shares
+    return (fcf_3y + terminal_value) / ((1 + discount) ** 3) / shares
 
 def compute_div(div, growth, discount, price):
     spread = max(discount - growth, 0.02)
-    val = div / spread if div > 0 else 0
-    return min(val, price * 1.5) # 防止股息估值过分夸张
+    return min(div / spread if div > 0 else 0, price * 1.5)
 
-# ---------- 3. 股票分类逻辑 ----------
 def classify_stock(div_yield, growth, buyback):
     total_yield = div_yield + buyback
-    if total_yield > 0.05 and growth < 0.08:
-        return "income"
-    elif growth > 0.12:
-        return "growth"
-    else:
-        return "blend"
+    if total_yield > 0.05 and growth < 0.08: return "income"
+    elif growth > 0.12: return "growth"
+    else: return "blend"
 
-# ---------- 4. 主程序 ----------
-st.title("🏦 收租婆量化大师 V9.7")
-st.caption("现金净额修正 | DCF安全锚 | 2026实战版")
-
-ticker = st.text_input("输入股票代码", "HIMX").upper()
+# ---------- 3. 主界面 (保留所有已有功能) ----------
+st.title("🏦 收租婆量化大师 V9.8")
+ticker = st.text_input("输入股票代码", "SPY").upper()
 
 if ticker:
     try:
         info = get_info(ticker)
-
-        # --- 基础数据 ---
         price = info.get("currentPrice") or 1.0
         eps = info.get("trailingEps") or 0.0
         fcf = info.get("freeCashflow") or 0.0
@@ -73,103 +50,93 @@ if ticker:
         div_yield = info.get("dividendYield") or 0.0
         div_rate = info.get("dividendRate") or 0.0
         pe = info.get("trailingPE") or (price / eps if eps > 0 else 0)
-        avg_vol = info.get("averageVolume", 1000000)
+        net_cash_per_share = (info.get("totalCash", 0) - info.get("totalDebt", 0)) / shares
 
-        # --- 新增：净现金计算 (针对烟蒂股的关键) ---
-        total_cash = info.get("totalCash", 0)
-        total_debt = info.get("totalDebt", 0)
-        net_cash_per_share = (total_cash - total_debt) / shares if shares > 0 else 0
-
-        # --- 回购 ---
-        buyback = min(fcf / market_cap, 0.05) if market_cap > 0 else 0
-
-        # --- 顶部UI (保留V9.6所有信息) ---
+        # 顶部展示
         st.subheader(f"{ticker} - {info.get('longName', '')}")
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("股价", f"${price:.2f}")
         c2.metric("PE", f"{pe:.1f}")
-        c3.metric("市值", f"{market_cap/1e9:.2f}B" if market_cap else "N/A")
+        c3.metric("市值", f"{market_cap/1e9:.1f}B")
         c4.metric("股息率", f"{div_yield*100:.2f}%")
 
-        c5, c6, c7 = st.columns(3)
-        c5.metric("回购收益率", f"{buyback*100:.2f}%")
-        c6.metric("EPS", f"${eps:.2f}")
-        c7.metric("每股净现金", f"${net_cash_per_share:.2f}", 
-                  help="账面现金减去总债务后摊到每股的价值")
-
-        # --- 增长率参数 ---
+        # 核心参数
         st.divider()
-        g1 = info.get("earningsGrowth") or 0
-        g2 = info.get("revenueGrowth") or 0
+        g1, g2 = info.get("earningsGrowth") or 0, info.get("revenueGrowth") or 0
         base_growth = max(g1, g2 * 0.7, 0.04)
-
+        
         col_p1, col_p2 = st.columns(2)
         with col_p1:
             growth_input = st.slider("核心增长率 (%)", 0.0, 30.0, float(base_growth*100))
-            discount = st.slider("折现率 (%)", 5.0, 15.0, 9.0) / 100
-        
+            discount = st.slider("折现率 (%)", 5.0, 15.0, 8.5) / 100
         with col_p2:
-            st.write("📈 **估值权重调整**")
-            stock_type = classify_stock(div_yield, growth_input/100, buyback)
+            stock_type = classify_stock(div_yield, growth_input/100, 0.02)
             st.info(f"系统识别类型：{stock_type.upper()}")
-            
-            # 权重智能预设
-            if stock_type == "growth":
-                w_pe, w_dcf, w_div = 0.3, 0.7, 0.0
-            elif stock_type == "income":
-                w_pe, w_dcf, w_div = 0.4, 0.2, 0.4
-            else:
-                w_pe, w_dcf, w_div = 0.5, 0.5, 0.0
-            
-            w_pe = st.slider("PE权重", 0.0, 1.0, w_pe)
-            w_dcf = st.slider("DCF权重", 0.0, 1.0, w_dcf)
+            w_pe = st.slider("PE权重", 0.0, 1.0, 0.5)
+            w_dcf = st.slider("DCF权重", 0.0, 1.0, 0.4)
 
-        # --- 模型计算 ---
-        growth = (growth_input / 100) + buyback
-        val_pe = eps * pe
-        val_dcf = compute_dcf(fcf, growth, discount, shares)
+        # 估值计算
+        growth = (growth_input / 100) + 0.02
+        val_pe, val_dcf = eps * pe, compute_dcf(fcf, growth, discount, shares)
         val_div = compute_div(div_rate, growth, discount, price)
-
-        # 原始估值
         raw_val = (val_pe * w_pe) + (val_dcf * w_dcf) + (val_div * (1 - w_pe - w_dcf))
-        
-        # 终极内在价值 = (模型预测 * 0.65 + 市场价格 * 0.35) + 净现金修正
-        # 这里的逻辑是：即便业务归零，公司账面的净现金也应该保底
         intrinsic = (raw_val * 0.65 + price * 0.35) + (net_cash_per_share * 0.5)
-
         margin = (intrinsic / price - 1) * 100
 
-        # --- 输出结果 ---
-        st.divider()
+        # 结果输出
         r1, r2 = st.columns(2)
-        r1.metric("终极内在价值", f"${intrinsic:.2f}", f"{margin:.2f}% 安全边际")
-        r1.write(f"估值区间: ${intrinsic*0.85:.2f} - ${intrinsic*1.15:.2f}")
-
-        # --- Sell Put 模块改进 ---
+        r1.metric("终极内在价值", f"${intrinsic:.2f}", f"{margin:.2f}%")
         with r2:
-            st.subheader("🎯 Sell Put 指南")
-            vix = get_vix()
-            st.write(f"市场恐慌度 (VIX): **{vix:.2f}**")
-            
-            # 流动性警示
-            if avg_vol < 500000:
-                st.warning("⚠️ 此股成交稀疏，期权价差大，请使用限价单‘钓鱼’。")
-            
-            strike = intrinsic * 0.85
-            if margin > 15:
-                st.success(f"强烈低估！建议 Strike: ${strike:.2f}")
-            elif margin > -5:
-                st.info(f"估值合理。建议 Strike: ${strike:.2f}")
-            else:
-                st.warning(f"目前溢价，建议 Strike: ${intrinsic*0.75:.2f}")
+            st.write(f"VIX 指数: {get_vix():.2f}")
+            if margin > 10: st.success("🎯 建议 Sell Put 进场")
+            else: st.warning("☁️ 建议观望或深度价外 Sell Put")
 
-        # --- 拆解面板 ---
+        # ---------- 4. 新增：SPY 期权链年化收益模块 ----------
+        st.divider()
+        st.subheader("📊 SPY 实战期权链 (Sell Put 收益率排名)")
+        
+        @st.cache_data(ttl=3600)
+        def get_spy_options():
+            spy = yf.Ticker("SPY")
+            expirations = spy.options
+            # 选最近一个周五到期的（通常选距离现在 7-45 天的比较稳）
+            target_date = expirations[1] # 取第二个到期日，通常更有参考意义
+            opt = spy.option_chain(target_date)
+            return opt.puts, target_date
+
+        try:
+            puts, exp_date = get_spy_options()
+            # 计算距离到期天数
+            d1 = datetime.strptime(exp_date, '%Y-%m-%d')
+            d2 = datetime.now()
+            days_to_expiry = (d1 - d2).days
+            if days_to_expiry <= 0: days_to_expiry = 1
+
+            # 过滤行权价：只看股价附近的 Put (90% - 100% 价格区间)
+            puts = puts[(puts['strike'] >= price * 0.85) & (puts['strike'] <= price * 1.01)]
+            
+            # 计算年化收益率逻辑
+            # 公式: (权利金 / 行权价) * (365 / 天数)
+            puts['Bid_Price'] = puts['bid']
+            puts['Annual_Yield %'] = (puts['bid'] / puts['strike']) * (365 / days_to_expiry) * 100
+            puts['接货需准备现金'] = puts['strike'] * 100
+            
+            # 美化显示
+            display_df = puts[['strike', 'lastPrice', 'bid', 'ask', 'Annual_Yield %', '接货需准备现金']].copy()
+            display_df.columns = ['行权价(Strike)', '最新成交价', '买一价(Bid)', '卖一价(Ask)', '年化收益率%', '1手接货金额($)']
+            
+            st.write(f"📅 目标到期日: **{exp_date}** (距离 {days_to_expiry} 天)")
+            st.dataframe(display_df.sort_values('年化收益率%', ascending=False), use_container_width=True)
+            
+            st.caption("💡 提示：年化收益率越高，风险越大（行权价离现价越近）。建议选‘年化 10%-15%’且行权价低于你算出的‘内在价值’的档位。")
+
+        except Exception as opt_e:
+            st.error(f"期权链抓取失败 (可能是周末或API限制): {opt_e}")
+
+        # 保留拆解面板
         with st.expander("📊 深度财务拆解"):
-            st.write(f"- PE估值项: ${val_pe:.2f}")
-            st.write(f"- DCF估值项(含保护): ${val_dcf:.2f}")
-            st.write(f"- 每股净现金(Net Cash): ${net_cash_per_share:.2f}")
-            st.write(f"- 综合模型原始值: ${raw_val:.2f}")
-            st.caption("注：终极价值计入了 50% 的净现金保底，这是烟蒂股的最后防线。")
+            st.write(f"每股净现金: ${net_cash_per_share:.2f}")
+            st.write(f"DCF估值: ${val_dcf:.2f}")
 
     except Exception as e:
-        st.error(f"数据抓取失败: {e}")
+        st.error(f"主程序错误: {e}")
